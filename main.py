@@ -1,4 +1,4 @@
-"""Cursor usage monitor — Windows system tray."""
+"""Cursor usage monitor — floating badge + Windows system tray."""
 
 from __future__ import annotations
 
@@ -10,10 +10,11 @@ import webbrowser
 from datetime import datetime, timedelta
 
 import pystray
-from PIL import Image, ImageTk
+from PIL import Image
 
 from cursor_api import fetch_current_usage, format_tooltip, format_tray_title
 from cursor_auth import get_access_token
+from float_window import FloatWindow
 from tray_icon import build_tray_icon, icon_label
 
 DASHBOARD_URL = "https://cursor.com/dashboard"
@@ -39,7 +40,7 @@ def next_auto_slot(now: datetime) -> datetime:
     if cursor.minute < 30:
         cursor = cursor.replace(minute=30)
     else:
-        cursor = (cursor.replace(minute=0) + timedelta(hours=1))
+        cursor = cursor.replace(minute=0) + timedelta(hours=1)
     if cursor <= now:
         cursor += AUTO_INTERVAL
     for _ in range(48 * 14):
@@ -56,6 +57,17 @@ def next_auto_slot(now: datetime) -> datetime:
 
 class TrayApp:
     def __init__(self) -> None:
+        self._click_through = False
+        self._refresh_lock = threading.Lock()
+        self._busy = False
+        self._stop = threading.Event()
+        self._root = tk.Tk()
+        self._root.withdraw()
+        self._float = FloatWindow(
+            self._root,
+            on_right_click=self._show_context_menu,
+            on_close=self._quit_from_window,
+        )
         self._icon = pystray.Icon(
             "cursor_usage_tray",
             build_tray_icon("--", dim=True),
@@ -63,23 +75,29 @@ class TrayApp:
             menu=pystray.Menu(
                 pystray.MenuItem("刷新用量", self._on_refresh, default=True),
                 pystray.MenuItem("打开 Dashboard", self._on_open_dashboard),
+                pystray.MenuItem(
+                    "穿透模式",
+                    self._on_toggle_click_through,
+                    checked=lambda _item: self._click_through,
+                ),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("退出", self._on_quit),
             ),
         )
-        self._refresh_lock = threading.Lock()
-        self._busy = False
-        self._stop = threading.Event()
-        self._taskbar_ready = False
-        self._taskbar_photo: ImageTk.PhotoImage | None = None
-        self._root = tk.Tk()
-        self._root.title("Cursor 用量 — 加载中")
-        self._root.geometry("1x1+-200+-200")
-        self._root.resizable(False, False)
-        self._root.protocol("WM_DELETE_WINDOW", self._quit_from_window)
-        self._root.bind("<Map>", self._on_taskbar_click)
-        self._apply_taskbar(build_tray_icon("--", dim=True), "Cursor 用量 — 加载中")
-        self._root.iconify()
+        self._ctx = tk.Menu(self._root, tearoff=0)
+        self._ctx.add_command(
+            label="刷新用量",
+            command=lambda: self._run_menu_action(self._refresh_async),
+        )
+        self._ctx.add_command(
+            label="打开 Dashboard",
+            command=lambda: self._run_menu_action(self._open_dashboard),
+        )
+        self._ctx.add_separator()
+        self._ctx.add_command(
+            label="退出",
+            command=lambda: self._run_menu_action(self._quit_from_window),
+        )
 
     def run(self) -> None:
         if in_auto_window(datetime.now()):
@@ -87,31 +105,40 @@ class TrayApp:
         else:
             waiting = "Cursor 用量 — 非自动刷新时段（工作日 8:00–22:00）"
             self._icon.title = waiting
-            self._root.title(waiting)
+            self._float.set_status("--", dim=True, tooltip=waiting)
         threading.Thread(target=self._schedule_loop, daemon=True).start()
         threading.Thread(target=self._icon.run, daemon=True).start()
-        self._root.after(600, self._mark_taskbar_ready)
         self._root.mainloop()
 
-    def _mark_taskbar_ready(self) -> None:
-        self._taskbar_ready = True
+    def _dismiss_context_menu(self) -> None:
+        try:
+            self._ctx.unpost()
+            self._ctx.grab_release()
+        except tk.TclError:
+            pass
+        try:
+            self._root.update_idletasks()
+        except tk.TclError:
+            pass
 
-    def _apply_taskbar(self, image: Image.Image, title: str) -> None:
-        if not self._root.winfo_exists():
-            return
-        self._taskbar_photo = ImageTk.PhotoImage(image)
-        self._root.iconphoto(True, self._taskbar_photo)
-        self._root.title(title[:120])
+    def _run_menu_action(self, action) -> None:
+        # Unpost first; defer the action so the menu can fully leave the screen.
+        self._dismiss_context_menu()
+        self._root.after(0, action)
 
-    def _on_taskbar_click(self, _event: tk.Event) -> None:
-        if str(self._root.state()) != "iconic":
-            self._root.iconify()
-        if self._taskbar_ready:
-            self._refresh_async()
+    def _show_context_menu(self, event: tk.Event) -> None:
+        try:
+            self._ctx.tk_popup(event.x_root, event.y_root)
+        finally:
+            self._dismiss_context_menu()
+
+    def _open_dashboard(self) -> None:
+        webbrowser.open(DASHBOARD_URL)
 
     def _quit_from_window(self) -> None:
         self._stop.set()
         self._icon.stop()
+        self._float.destroy()
         self._root.quit()
 
     def _schedule_loop(self) -> None:
@@ -126,15 +153,35 @@ class TrayApp:
         self._refresh_async()
 
     def _on_open_dashboard(self, _icon: pystray.Icon, _item: pystray.MenuItem) -> None:
-        webbrowser.open(DASHBOARD_URL)
+        self._open_dashboard()
+
+    def _on_toggle_click_through(
+        self, _icon: pystray.Icon, _item: pystray.MenuItem
+    ) -> None:
+        try:
+            self._root.after(0, self._toggle_click_through)
+        except tk.TclError:
+            pass
+
+    def _toggle_click_through(self) -> None:
+        self._click_through = not self._click_through
+        self._float.set_click_through(self._click_through)
+        try:
+            self._icon.update_menu()
+        except Exception:  # noqa: BLE001 — pystray may not support on all backends
+            pass
 
     def _on_quit(self, _icon: pystray.Icon, _item: pystray.MenuItem) -> None:
         self._stop.set()
         self._icon.stop()
         try:
-            self._root.after(0, self._root.quit)
+            self._root.after(0, self._quit_ui)
         except tk.TclError:
             pass
+
+    def _quit_ui(self) -> None:
+        self._float.destroy()
+        self._root.quit()
 
     def _refresh_async(self) -> None:
         if self._busy:
@@ -147,7 +194,7 @@ class TrayApp:
 
     def _do_refresh(self) -> None:
         try:
-            self._set_status("Cursor 用量 — 刷新中…", build_tray_icon("--", dim=True))
+            self._set_status("Cursor 用量 — 刷新中…", build_tray_icon("--", dim=True), pct=None, dim=True)
             token = get_access_token()
             usage = fetch_current_usage(token)
             title = format_tray_title(usage)
@@ -156,24 +203,41 @@ class TrayApp:
             self._set_status(
                 f"{title}\n{tooltip}",
                 build_tray_icon(digits, pct=usage.primary_used_pct),
+                pct=usage.primary_used_pct,
+                digits=digits,
             )
         except Exception as exc:  # noqa: BLE001 — show user-facing tray error
             msg = str(exc) or exc.__class__.__name__
             self._set_status(
                 f"Cursor 用量 — 失败\n{msg}",
                 build_tray_icon("--", pct=100),
+                pct=100,
+                digits="--",
+                dim=False,
             )
         finally:
             self._busy = False
 
-    def _set_status(self, tooltip: str, image: Image.Image) -> None:
+    def _set_status(
+        self,
+        tooltip: str,
+        image: Image.Image,
+        *,
+        pct: float | None = None,
+        digits: str = "--",
+        dim: bool = False,
+    ) -> None:
         clamped = self._clamp_tray_tooltip(tooltip)
         self._icon.icon = image
         self._icon.title = clamped
-        snapshot = image.copy()
-        title = clamped.replace("\n", " · ")
+        tip_one_line = clamped.replace("\n", " · ")
         try:
-            self._root.after(0, lambda: self._apply_taskbar(snapshot, title))
+            self._root.after(
+                0,
+                lambda: self._float.set_status(
+                    digits, pct=pct, dim=dim or pct is None, tooltip=tip_one_line
+                ),
+            )
         except tk.TclError:
             pass
 
