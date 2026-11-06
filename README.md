@@ -1,53 +1,77 @@
 # CursorUsageTray
 
-Windows **纯 Python** 用量监视器：桌面**置顶悬浮框** + 系统托盘（`pystray`）。读取本机 Cursor 登录态，调用 `GetCurrentPeriodUsage` 显示套餐已用百分比。
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-## 功能
+A lightweight **Windows-only** Cursor usage monitor written in pure Python. It shows your plan usage as an **always-on-top floating badge** plus a **system tray icon**, by reading the local Cursor login session and calling Cursor’s internal `GetCurrentPeriodUsage` API.
 
-- **置顶悬浮框**：无边框小徽章，文案为 `Cursor Usage : xx.x%`，默认贴在屏幕右上；可拖动，始终置顶。左键仅拖动，右键打开菜单（刷新 / Dashboard / 退出）
-- **穿透模式**：托盘图标右键菜单可开关。开启后鼠标点击会穿透悬浮框，作用于下方窗口；悬浮框略变透明作提示。关闭穿透后可再拖动/右键操作悬浮框
-- 托盘图标：**黑底半粗数字**（Segoe UI Semibold）。不足 100 时显示一位小数（如 `12.3`）；满额显示 `100`。颜色按用量从绿渐变到红
-- 托盘悬停可看 `已使用 x.x%` 及 Auto/API 等详细文案
-- **自动刷新**：周一至周五 8:00–22:00，每 30 分钟（如 8:00、8:30、9:00 … 22:00）；周末和夜间不自动请求。若在该时段内启动，会立刻刷新一次
-- 右键菜单或托盘菜单 **「刷新用量」** 随时手动更新（不受时段限制）
-- **「打开 Dashboard」** 跳转 Cursor 网页用量页
-- Token 来源：`%APPDATA%\Cursor\auth.json`（CLI）或 `%APPDATA%\Cursor\User\globalStorage\state.vscdb`（桌面 Cursor）
-- 新版 Cursor 会对 Token 使用 `cursor-safe-storage:v1:` 加密；本工具在 Windows 上通过 DPAPI + AES-GCM 本地解密（与浏览器读密码同源机制，密钥不出本机）
+> Not an official Cursor product. Uses undocumented client APIs that may break after Cursor updates.
 
-## 运行
+## Features
 
-1. 确保已在 **Cursor 桌面版登录**（或执行过 `agent login`）。
-2. **双击 `run.vbs`**（无 CMD 黑窗口），或在项目目录执行：
+- **Floating badge** — Frameless, always on top, default near the top-right. Text format: `Cursor Usage : xx.x%`. Drag with left mouse; right-click opens a menu (Refresh / Dashboard / Quit).
+- **Click-through mode** — Toggle from the **tray icon** context menu. When enabled, mouse clicks pass through the badge to windows underneath; the badge becomes slightly more transparent as a hint. Turn it off to drag or right-click the badge again.
+- **Tray icon** — Black background with semibold digits (Segoe UI Semibold). One decimal place below 100 (e.g. `12.3`); full usage shows `100`. Color shifts green → yellow → red by usage.
+- **Hover tooltip** — Tray tip shows used % plus Auto / API detail lines when available.
+- **Auto refresh** — Weekdays **08:00–22:00**, every **30 minutes** (`:00` / `:30`). No automatic requests on weekends or overnight. Starting inside that window triggers an immediate refresh.
+- **Manual refresh** — Tray or float menu **Refresh usage** anytime (not limited by the schedule).
+- **Open Dashboard** — Opens the Cursor web usage page.
+- **Local auth only** — Token from `%APPDATA%\Cursor\auth.json` (CLI) or `%APPDATA%\Cursor\User\globalStorage\state.vscdb` (desktop Cursor). Newer Cursor builds may encrypt tokens as `cursor-safe-storage:v1:`; this tool decrypts on Windows via DPAPI + AES-GCM locally (keys never leave the machine).
+
+## Requirements
+
+- Windows 10/11
+- Python **3.10+** (tested with 3.13)
+- Cursor desktop signed in, or `agent login` completed
+
+## Quick start
+
+1. Sign in to **Cursor desktop** (or run `agent login`).
+2. Double-click **`run.vbs`** (no console window), **or** in the project folder:
 
 ```bat
 python -m pip install -r requirements.txt
 pythonw main.py
 ```
 
-`run.bat` 会用 `pythonw` 启动，但从资源管理器双击时仍可能短暂出现命令行；日常请用 **`run.vbs`**。
+- Prefer **`run.vbs`** for daily use (silent dependency install + `pythonw`).
+- **`run.bat`** also launches with `pythonw`, but double-clicking from Explorer may flash a console briefly. Pass any argument to `run.bat` to run the bat path directly (e.g. `run.bat go`).
 
-启动后桌面右上会出现置顶悬浮框；托盘图标仍在任务栏右下角（若被折叠，请在「^」隐藏图标里拖到可见区域）。
+After start, a floating badge appears near the top-right; the tray icon is in the notification area (drag it out from the overflow `^` if hidden).
 
-## 开机自启（可选）
+## Optional: start with Windows
 
-1. `Win + R` → 输入 `shell:startup` → 回车。
-2. 为 **`run.vbs`** 创建快捷方式并放入该文件夹（无控制台窗口）。
+1. `Win + R` → `shell:startup` → Enter.
+2. Create a shortcut to **`run.vbs`** in that folder.
 
-## 说明
+## Usage tips
 
-- 使用的是 Cursor 客户端同源内部接口，**非官方公开 API**，更新后可能失效。
-- `accessToken` 仅在本机读取，不会上传到其他服务器。
-- 若提示登录过期，重新打开 Cursor 或运行 `agent login` 后再刷新。
+| Action | Where |
+|--------|--------|
+| Drag badge | Left-drag on the float |
+| Float menu | Right-click the float |
+| Refresh / Dashboard / Quit | Float menu or tray menu |
+| Click-through on/off | **Tray** menu → **穿透模式** (Click-through) |
 
-## 项目结构
+## Notes & privacy
 
-| 文件 | 说明 |
+- Uses Cursor’s internal dashboard API, **not** a public official API.
+- `accessToken` is read only on this PC and is not uploaded to any third-party server.
+- If login looks expired, reopen Cursor or run `agent login`, then refresh.
+
+## Project layout
+
+| File | Role |
 |------|------|
-| `main.py` | 悬浮框 / 托盘 UI 与刷新逻辑 |
-| `float_window.py` | 置顶可拖动悬浮徽章 |
-| `tray_icon.py` | 黑底粗体数字图标 |
-| `cursor_safe_storage.py` | Windows 下解密 safeStorage |
-| `cursor_api.py` | 请求用量并格式化显示 |
-| `run.bat` | 一键安装依赖并启动 |
-| `run.vbs` | 静默安装依赖并启动（推荐） |
-| `run.bat` | 命令行/调试启动 |
+| `main.py` | App entry: float + tray UI, scheduling, refresh |
+| `float_window.py` | Always-on-top draggable badge & click-through |
+| `tray_icon.py` | Numeric tray / badge icon rendering |
+| `cursor_api.py` | Fetch usage & format display strings |
+| `cursor_auth.py` | Locate and load access token |
+| `cursor_safe_storage.py` | Decrypt Cursor safeStorage on Windows |
+| `requirements.txt` | Python dependencies |
+| `run.vbs` | Silent install + start (recommended) |
+| `run.bat` | Install + start (console-friendly / debug) |
+
+## License
+
+Use and modify for personal purposes. No warranty.
